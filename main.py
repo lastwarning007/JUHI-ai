@@ -5,13 +5,13 @@ import hashlib
 import base64
 import requests
 import urllib3
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, Response
 
 urllib3.disable_warnings()
 
 app = Flask(__name__)
 
-# ---------- Helper functions (same as before) ----------
+# ---------- Helper functions (unchanged) ----------
 def _h(s):
     return hashlib.sha256(s.encode()).hexdigest()[:16]
 
@@ -143,17 +143,28 @@ def _gen(prompt, style_id, aspect):
                 no_bg.append(decoded[start:end])
     return images, no_bg
 
-# ---------- Flask Web UI with Two Buttons + Modals ----------
+# ---------- Flask Web UI with Premium Look ----------
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
-    <title>JUHI AI | AI Image Generator</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,600;14..32,700;14..32,800&display=swap" rel="stylesheet">
+    <title>JUHI AI | Premium AI Image Generator</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <style>
+        :root {
+            --bg-dark: #0a0c14;
+            --glass-bg: rgba(18, 20, 32, 0.65);
+            --glass-border: rgba(255, 255, 255, 0.08);
+            --primary: #8b5cf6;
+            --primary-glow: rgba(139, 92, 246, 0.4);
+            --secondary: #3b82f6;
+            --accent: #ec4899;
+            --text: #f1f5f9;
+            --text-dim: #94a3b8;
+        }
         * {
             margin: 0;
             padding: 0;
@@ -161,17 +172,21 @@ HTML_TEMPLATE = '''
         }
         body {
             font-family: 'Inter', sans-serif;
-            background: radial-gradient(circle at 10% 20%, rgba(10, 12, 28, 1) 0%, rgba(0, 0, 0, 0.95) 100%);
-            color: #f0f0f0;
+            background: radial-gradient(ellipse at 30% 10%, #111827 0%, #030712 100%);
+            color: var(--text);
             line-height: 1.5;
             min-height: 100vh;
         }
         .glass {
-            background: rgba(20, 22, 40, 0.65);
-            backdrop-filter: blur(14px);
+            background: var(--glass-bg);
+            backdrop-filter: blur(16px);
             border-radius: 2rem;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+            border: 1px solid var(--glass-border);
+            box-shadow: 0 20px 40px rgba(0,0,0,0.3), 0 0 0 1px rgba(255,255,255,0.02) inset;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .glass:hover {
+            box-shadow: 0 25px 45px rgba(0,0,0,0.4);
         }
         .container {
             max-width: 1400px;
@@ -183,14 +198,14 @@ HTML_TEMPLATE = '''
             justify-content: space-between;
             align-items: center;
             flex-wrap: wrap;
-            margin-bottom: 2rem;
+            margin-bottom: 3rem;
             padding-bottom: 1rem;
-            border-bottom: 1px solid rgba(255,255,255,0.1);
+            border-bottom: 1px solid rgba(255,255,255,0.05);
         }
         .logo h1 {
-            font-size: 2.2rem;
+            font-size: 2.3rem;
             font-weight: 800;
-            background: linear-gradient(135deg, #fff, #a855f7, #3b82f6);
+            background: linear-gradient(135deg, #fff, var(--primary), var(--secondary));
             -webkit-background-clip: text;
             background-clip: text;
             color: transparent;
@@ -198,10 +213,10 @@ HTML_TEMPLATE = '''
         }
         .logo p {
             font-size: 0.85rem;
-            opacity: 0.7;
+            color: var(--text-dim);
         }
         .telegram-round {
-            background: #1f2a3e;
+            background: rgba(30, 35, 50, 0.8);
             border-radius: 50%;
             width: 48px;
             height: 48px;
@@ -210,16 +225,14 @@ HTML_TEMPLATE = '''
             justify-content: center;
             text-decoration: none;
             color: white;
-            transition: 0.2s;
-            border: 1px solid #5865f2;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            transition: all 0.2s;
+            border: 1px solid rgba(88, 101, 242, 0.5);
+            backdrop-filter: blur(4px);
         }
         .telegram-round:hover {
-            background: #2a3a55;
-            transform: scale(1.05);
-        }
-        .telegram-round i {
-            font-size: 1.8rem;
+            background: #5865f2;
+            transform: scale(1.08) rotate(5deg);
+            border-color: transparent;
         }
         .main-grid {
             display: grid;
@@ -230,163 +243,119 @@ HTML_TEMPLATE = '''
             .main-grid { grid-template-columns: 1fr; }
             .container { padding: 1rem; }
         }
-        /* Two big buttons */
         .selector-row {
             display: flex;
             gap: 1rem;
-            margin-bottom: 1.5rem;
+            margin-bottom: 1.8rem;
         }
         .selector-btn {
             flex: 1;
-            background: rgba(30,30,50,0.8);
-            border: 1px solid rgba(255,255,255,0.2);
-            padding: 0.9rem 0.5rem;
+            background: linear-gradient(135deg, rgba(30,32,48,0.9), rgba(20,22,38,0.95));
+            border: 1px solid rgba(139,92,246,0.3);
+            padding: 1rem 0.5rem;
             border-radius: 1.5rem;
             font-size: 1rem;
             font-weight: 600;
             color: white;
             cursor: pointer;
-            transition: 0.2s;
+            transition: all 0.2s cubic-bezier(0.2, 0.9, 0.4, 1.1);
             text-align: center;
+            backdrop-filter: blur(4px);
         }
         .selector-btn i {
-            margin-right: 8px;
+            margin-right: 10px;
+            font-size: 1.1rem;
+            color: var(--primary);
         }
         .selector-btn:hover {
-            background: rgba(124,58,237,0.6);
-            transform: translateY(-2px);
+            background: linear-gradient(135deg, #4c1d95, #6d28d9);
+            border-color: transparent;
+            transform: translateY(-3px);
+            box-shadow: 0 12px 20px -10px rgba(139,92,246,0.5);
         }
         .selected-value {
-            font-size: 0.8rem;
-            margin-top: 0.3rem;
-            opacity: 0.7;
+            font-size: 0.85rem;
+            margin-top: 0.5rem;
+            padding: 0.5rem;
+            background: rgba(0,0,0,0.3);
+            border-radius: 1rem;
             text-align: center;
-        }
-        /* Modal overlay */
-        .modal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0,0,0,0.8);
-            backdrop-filter: blur(5px);
-            z-index: 1000;
-            justify-content: center;
-            align-items: center;
-        }
-        .modal-content {
-            background: rgba(20,22,40,0.95);
-            backdrop-filter: blur(16px);
-            border-radius: 2rem;
-            width: 90%;
-            max-width: 500px;
-            max-height: 80vh;
-            overflow-y: auto;
-            padding: 1.5rem;
-            border: 1px solid rgba(255,255,255,0.2);
-            box-shadow: 0 20px 40px rgba(0,0,0,0.4);
-        }
-        .modal-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 1.2rem;
-            font-size: 1.4rem;
-            font-weight: bold;
-        }
-        .close-modal {
-            cursor: pointer;
-            font-size: 1.8rem;
-            line-height: 1;
-        }
-        .modal-options {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.7rem;
-        }
-        .modal-option {
-            background: rgba(30,30,50,0.7);
-            border: 1px solid rgba(255,255,255,0.1);
-            padding: 0.6rem 1rem;
-            border-radius: 2rem;
-            cursor: pointer;
-            transition: 0.1s;
-            font-size: 0.9rem;
-        }
-        .modal-option:hover {
-            background: #7c3aed;
-            transform: scale(1.02);
-        }
-        /* rest of the form */
-        .input-panel {
-            padding: 1.8rem;
+            color: var(--text-dim);
+            font-weight: 500;
         }
         .form-group {
-            margin-bottom: 1.5rem;
+            margin-bottom: 1.8rem;
         }
         label {
             display: block;
             font-weight: 500;
-            margin-bottom: 0.5rem;
-            opacity: 0.9;
+            margin-bottom: 0.6rem;
+            font-size: 0.9rem;
+            color: var(--text-dim);
         }
         textarea {
             width: 100%;
-            padding: 0.9rem 1rem;
-            background: rgba(0,0,0,0.5);
-            border: 1px solid rgba(255,255,255,0.15);
-            border-radius: 1.2rem;
+            padding: 1rem 1.2rem;
+            background: rgba(0,0,0,0.45);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 1.25rem;
             color: white;
             font-size: 0.95rem;
             font-family: 'Inter', monospace;
-            min-height: 110px;
+            min-height: 120px;
             resize: vertical;
+            transition: 0.2s;
         }
         textarea:focus {
             outline: none;
-            border-color: #a855f7;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px var(--primary-glow);
         }
         .random-prompt {
-            background: rgba(168,85,247,0.2);
-            border: 1px dashed #a855f7;
-            border-radius: 1rem;
-            padding: 0.7rem;
+            background: rgba(139,92,246,0.15);
+            border: 1px dashed var(--primary);
+            border-radius: 1.2rem;
+            padding: 0.75rem;
             text-align: center;
             cursor: pointer;
             margin-bottom: 1rem;
             font-size: 0.85rem;
+            transition: 0.2s;
+        }
+        .random-prompt:hover {
+            background: rgba(139,92,246,0.3);
+            border-style: solid;
         }
         .generate-btn {
-            background: linear-gradient(90deg, #7c3aed, #2563eb);
+            background: linear-gradient(90deg, var(--primary), var(--secondary));
             border: none;
-            font-weight: bold;
-            font-size: 1.1rem;
-            padding: 0.9rem;
+            font-weight: 700;
+            font-size: 1.05rem;
+            padding: 1rem;
             width: 100%;
-            border-radius: 1.2rem;
+            border-radius: 1.5rem;
             cursor: pointer;
             transition: 0.2s;
-            box-shadow: 0 5px 15px rgba(37,99,235,0.3);
+            box-shadow: 0 8px 20px rgba(59,130,246,0.3);
             color: white;
         }
         .generate-btn:hover {
             transform: translateY(-2px);
             filter: brightness(1.05);
+            box-shadow: 0 12px 25px rgba(139,92,246,0.4);
         }
         .loading {
             display: none;
             text-align: center;
-            margin: 1rem 0;
+            margin: 1.5rem 0;
         }
         .spinner {
-            width: 40px;
-            height: 40px;
-            border: 3px solid rgba(255,255,255,0.2);
-            border-top: 3px solid #a855f7;
+            width: 44px;
+            height: 44px;
+            border: 3px solid rgba(255,255,255,0.15);
+            border-top: 3px solid var(--primary);
             border-radius: 50%;
-            animation: spin 1s linear infinite;
+            animation: spin 0.9s linear infinite;
             margin: 0 auto 0.8rem;
         }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
@@ -396,16 +365,21 @@ HTML_TEMPLATE = '''
         .image-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-            gap: 1rem;
-            margin-top: 1rem;
+            gap: 1.2rem;
+            margin-top: 1.5rem;
         }
         .image-card {
             position: relative;
-            background: rgba(0,0,0,0.4);
-            border-radius: 1.2rem;
+            background: rgba(0,0,0,0.5);
+            border-radius: 1.5rem;
             overflow: hidden;
-            transition: 0.2s;
+            transition: all 0.25s ease;
             border: 1px solid rgba(255,255,255,0.1);
+        }
+        .image-card:hover {
+            transform: scale(0.98);
+            border-color: var(--primary);
+            box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5);
         }
         .image-card img {
             width: 100%;
@@ -416,53 +390,142 @@ HTML_TEMPLATE = '''
         }
         .download-icon {
             position: absolute;
-            top: 8px;
-            right: 8px;
-            background: rgba(0,0,0,0.6);
-            backdrop-filter: blur(4px);
+            top: 12px;
+            right: 12px;
+            background: rgba(0,0,0,0.65);
+            backdrop-filter: blur(6px);
             border-radius: 50%;
-            width: 32px;
-            height: 32px;
+            width: 34px;
+            height: 34px;
             display: flex;
             align-items: center;
             justify-content: center;
             cursor: pointer;
             color: white;
             transition: 0.2s;
-            opacity: 0.8;
+            opacity: 0.85;
             z-index: 2;
         }
         .download-icon:hover {
-            background: #7c3aed;
+            background: var(--primary);
             transform: scale(1.1);
             opacity: 1;
         }
         .no-results {
             text-align: center;
             padding: 3rem;
-            opacity: 0.6;
+            color: var(--text-dim);
         }
         .bg-remove-btn {
-            margin-top: 1rem;
-            background: #2d2f42;
+            margin-top: 1.5rem;
+            background: rgba(45, 47, 66, 0.8);
             border: none;
-            padding: 0.6rem;
+            padding: 0.75rem;
             border-radius: 2rem;
-            font-size: 0.8rem;
+            font-size: 0.85rem;
             width: 100%;
             cursor: pointer;
+            font-weight: 500;
+            transition: 0.2s;
+        }
+        .bg-remove-btn:hover {
+            background: #3b3f5c;
         }
         .info-text {
-            font-size: 0.8rem;
+            font-size: 0.75rem;
             margin-top: 1rem;
             text-align: center;
-            opacity: 0.6;
+            color: var(--text-dim);
         }
         footer {
             text-align: center;
             margin-top: 3rem;
-            font-size: 0.75rem;
+            font-size: 0.7rem;
             opacity: 0.5;
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.85);
+            backdrop-filter: blur(8px);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+        .modal-content {
+            background: rgba(18, 20, 32, 0.98);
+            backdrop-filter: blur(20px);
+            border-radius: 2rem;
+            width: 90%;
+            max-width: 550px;
+            max-height: 80vh;
+            overflow-y: auto;
+            padding: 1.8rem;
+            border: 1px solid rgba(139,92,246,0.3);
+            box-shadow: 0 30px 50px rgba(0,0,0,0.5);
+            animation: modalFadeIn 0.2s ease-out;
+        }
+        @keyframes modalFadeIn {
+            from { opacity: 0; transform: scale(0.96); }
+            to { opacity: 1; transform: scale(1); }
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.5rem;
+            font-size: 1.4rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #fff, var(--primary));
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+        }
+        .close-modal {
+            cursor: pointer;
+            font-size: 2rem;
+            line-height: 1;
+            color: var(--text-dim);
+            transition: 0.1s;
+        }
+        .close-modal:hover {
+            color: white;
+        }
+        .modal-options {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.8rem;
+        }
+        .modal-option {
+            background: rgba(30,32,48,0.7);
+            border: 1px solid rgba(255,255,255,0.1);
+            padding: 0.7rem 1.2rem;
+            border-radius: 2rem;
+            cursor: pointer;
+            transition: all 0.15s;
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+        .modal-option:hover {
+            background: var(--primary);
+            transform: translateY(-2px);
+            box-shadow: 0 5px 12px rgba(139,92,246,0.4);
+            border-color: transparent;
+        }
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(0,0,0,0.3);
+            border-radius: 10px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--primary);
+            border-radius: 10px;
         }
     </style>
 </head>
@@ -471,60 +534,57 @@ HTML_TEMPLATE = '''
     <div class="header">
         <div class="logo">
             <h1>JUHI AI ✦</h1>
-            <p>cinematic · neural · imagination</p>
+            <p>premium neural · cinematic intelligence</p>
         </div>
         <a href="https://t.me/hardhacker007" target="_blank" class="telegram-round" aria-label="Telegram">
-            <i class="fab fa-telegram-plane"></i>
+            <i class="fab fa-telegram-plane fa-lg"></i>
         </a>
     </div>
 
     <div class="main-grid">
-        <!-- Left Panel -->
-        <div class="glass input-panel">
-            <h2><i class="fas fa-sliders-h"></i> Configure</h2>
+        <div class="glass input-panel" style="padding: 1.8rem;">
+            <h2 style="margin-bottom: 1.8rem; font-weight: 600;"><i class="fas fa-sliders-h" style="margin-right: 8px;"></i> Configure</h2>
             <div class="selector-row">
                 <div class="selector-btn" id="choose-style-btn">
                     <i class="fas fa-palette"></i> Choose Style
                 </div>
                 <div class="selector-btn" id="choose-aspect-btn">
-                    <i class="fas fa-expand-alt"></i> Choose Aspect Ratio
+                    <i class="fas fa-expand-alt"></i> Choose Aspect
                 </div>
             </div>
-            <div id="style-display" class="selected-value">Selected style: 🎌 Anime</div>
-            <div id="aspect-display" class="selected-value">Selected aspect: Square (1:1)</div>
+            <div id="style-display" class="selected-value">🎨 Selected style: Anime</div>
+            <div id="aspect-display" class="selected-value">📐 Selected aspect: Square (1:1)</div>
 
-            <div class="form-group" style="margin-top: 1.5rem;">
-                <label>✨ Prompt</label>
+            <div class="form-group" style="margin-top: 1.8rem;">
+                <label><i class="fas fa-feather-alt"></i> Prompt</label>
                 <div class="random-prompt" id="random-prompt-btn">
-                    <i class="fas fa-dice-d6"></i> Random Prompt Idea
+                    <i class="fas fa-dice-d6"></i> Random prompt idea
                 </div>
-                <textarea id="prompt" placeholder="e.g., a cyberpunk cat with neon sunglasses, rainy tokyo street..."></textarea>
+                <textarea id="prompt" placeholder="Describe your vision... e.g., a cosmic dragon floating through a nebula, cyberpunk, ethereal lighting"></textarea>
             </div>
             <button class="generate-btn" id="generate-btn"><i class="fas fa-sparkles"></i> Generate Images</button>
             <div class="loading" id="loading">
                 <div class="spinner"></div>
-                <div>AI is weaving pixels... ✨</div>
+                <div style="font-size: 0.85rem;">Crafting your artwork...</div>
             </div>
-            <div class="info-text">up to 4 high-res images • enhanced lighting & composition</div>
+            <div class="info-text">4 high‑resolution images • AI‑enhanced lighting & composition</div>
         </div>
 
-        <!-- Right Panel: Gallery -->
         <div class="glass result-panel">
-            <h2><i class="fas fa-images"></i> Gallery</h2>
+            <h2 style="margin-bottom: 1rem; font-weight: 600;"><i class="fas fa-images"></i> Gallery</h2>
             <div id="image-gallery" class="image-grid">
-                <div class="no-results">✨ your generated images will appear here</div>
+                <div class="no-results">✨ Your generated images will appear here</div>
             </div>
-            <button id="remove-bg-btn" class="bg-remove-btn" style="display:none;"><i class="fas fa-eraser"></i> Show without background (if available)</button>
+            <button id="remove-bg-btn" class="bg-remove-btn" style="display:none;"><i class="fas fa-eraser"></i> Remove background (if available)</button>
         </div>
     </div>
-    <footer>JUHI AI — next‑gen generative engine • style transfer & ultra HD</footer>
+    <footer>JUHI AI — advanced generative engine • style transfer & ultra HD</footer>
 </div>
 
-<!-- Modals -->
 <div id="style-modal" class="modal">
     <div class="modal-content">
         <div class="modal-header">
-            <span>🎨 Select Style</span>
+            <span><i class="fas fa-palette"></i> Choose Style</span>
             <span class="close-modal" data-modal="style-modal">&times;</span>
         </div>
         <div class="modal-options" id="style-modal-options">
@@ -538,7 +598,7 @@ HTML_TEMPLATE = '''
 <div id="aspect-modal" class="modal">
     <div class="modal-content">
         <div class="modal-header">
-            <span>📐 Select Aspect Ratio</span>
+            <span><i class="fas fa-expand-alt"></i> Choose Aspect Ratio</span>
             <span class="close-modal" data-modal="aspect-modal">&times;</span>
         </div>
         <div class="modal-options" id="aspect-modal-options">
@@ -550,13 +610,11 @@ HTML_TEMPLATE = '''
 </div>
 
 <script>
-    // Data storage
     let selectedStyle = "anime";
     let selectedStyleName = "🎌 Anime";
     let selectedAspect = "1:1";
     let selectedAspectName = "Square (1:1)";
 
-    // DOM elements
     const styleDisplay = document.getElementById('style-display');
     const aspectDisplay = document.getElementById('aspect-display');
     const chooseStyleBtn = document.getElementById('choose-style-btn');
@@ -565,11 +623,8 @@ HTML_TEMPLATE = '''
     const aspectModal = document.getElementById('aspect-modal');
     const closeModals = document.querySelectorAll('.close-modal');
 
-    // Open modals
     chooseStyleBtn.onclick = () => styleModal.style.display = 'flex';
     chooseAspectBtn.onclick = () => aspectModal.style.display = 'flex';
-
-    // Close modals
     closeModals.forEach(btn => {
         btn.onclick = () => {
             const modalId = btn.getAttribute('data-modal');
@@ -581,65 +636,47 @@ HTML_TEMPLATE = '''
         if (e.target === aspectModal) aspectModal.style.display = 'none';
     };
 
-    // Style selection in modal
-    const styleOptions = document.querySelectorAll('#style-modal-options .modal-option');
-    styleOptions.forEach(opt => {
+    document.querySelectorAll('#style-modal-options .modal-option').forEach(opt => {
         opt.addEventListener('click', () => {
             selectedStyle = opt.dataset.style;
             selectedStyleName = opt.dataset.name;
-            styleDisplay.innerText = `Selected style: ${selectedStyleName}`;
+            styleDisplay.innerText = `🎨 Selected style: ${selectedStyleName}`;
             styleModal.style.display = 'none';
         });
     });
-
-    // Aspect selection in modal
-    const aspectOptions = document.querySelectorAll('#aspect-modal-options .modal-option');
-    aspectOptions.forEach(opt => {
+    document.querySelectorAll('#aspect-modal-options .modal-option').forEach(opt => {
         opt.addEventListener('click', () => {
             selectedAspect = opt.dataset.aspect;
             selectedAspectName = opt.dataset.name;
-            aspectDisplay.innerText = `Selected aspect: ${selectedAspectName} (${selectedAspect})`;
+            aspectDisplay.innerText = `📐 Selected aspect: ${selectedAspectName} (${selectedAspect})`;
             aspectModal.style.display = 'none';
         });
     });
 
-    // Random prompts
     const randomPrompts = [
-        "space cat astronaut", "cyberpunk samurai neon city", "golden hour desert ruins",
-        "ethereal forest spirit", "steampunk airship port", "magical girl transforming",
-        "dragon in futuristic tokyo", "ancient egyptian queen hologram", "cosmic whale nebula",
-        "glass lotus floating in space", "mecha anime battle scene", "portrait of a sad android"
+        "ethereal forest spirit with glowing antlers", "cyberpunk samurai under neon rain", "golden hour over ancient ruins",
+        "steampunk airship floating above clouds", "magical girl surrounded by cosmic butterflies", "dragon perched on futuristic Tokyo tower",
+        "ancient Egyptian queen as a hologram", "cosmic whale swimming through nebula", "glass lotus flower floating in space",
+        "mecha anime battle scene at sunset", "portrait of a sad android with glowing tears", "bioluminescent deep sea creature"
     ];
     document.getElementById('random-prompt-btn').addEventListener('click', () => {
         const r = randomPrompts[Math.floor(Math.random() * randomPrompts.length)];
         document.getElementById('prompt').value = r;
     });
 
-    // Image handling (same as before)
     let currentImages = [];
     let currentNoBg = [];
 
-    async function downloadImage(url, filename = 'juhi_ai_image.jpg') {
-        try {
-            const response = await fetch(url);
-            const blob = await response.blob();
-            const blobUrl = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = blobUrl;
-            a.download = filename;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(blobUrl);
-        } catch (err) {
-            alert('Download failed. Try right-click → Save image as...');
-        }
+    // FIXED: download uses backend proxy
+    function downloadImage(url, filename = 'juhi_ai_image.jpg') {
+        const proxyUrl = `/download?url=${encodeURIComponent(url)}`;
+        window.location.href = proxyUrl;
     }
 
     function renderImages(urls, isNoBgMode = false) {
         const gallery = document.getElementById('image-gallery');
         if (!urls || urls.length === 0) {
-            gallery.innerHTML = '<div class="no-results">⚠️ no images generated, try again</div>';
+            gallery.innerHTML = '<div class="no-results">⚠️ No images generated. Try again.</div>';
             return;
         }
         let html = '';
@@ -658,20 +695,18 @@ HTML_TEMPLATE = '''
         document.querySelectorAll('.download-icon').forEach(icon => {
             icon.addEventListener('click', (e) => {
                 e.stopPropagation();
-                const url = icon.dataset.url;
-                const filename = icon.dataset.filename;
-                downloadImage(url, filename);
+                downloadImage(icon.dataset.url, icon.dataset.filename);
             });
         });
         const removeBtn = document.getElementById('remove-bg-btn');
         if (currentNoBg && currentNoBg.length && !isNoBgMode) {
             removeBtn.style.display = 'block';
+            removeBtn.textContent = "🎭 Remove background";
         } else {
             removeBtn.style.display = 'none';
         }
     }
 
-    // Generate button
     const generateBtn = document.getElementById('generate-btn');
     const loadingDiv = document.getElementById('loading');
     generateBtn.addEventListener('click', async () => {
@@ -683,7 +718,7 @@ HTML_TEMPLATE = '''
         loadingDiv.style.display = 'block';
         generateBtn.disabled = true;
         const galleryDiv = document.getElementById('image-gallery');
-        galleryDiv.innerHTML = '<div class="no-results"><div class="spinner" style="width:30px;height:30px;"></div> generating...</div>';
+        galleryDiv.innerHTML = '<div class="no-results"><div class="spinner"></div> Generating...</div>';
         try {
             const response = await fetch('/generate', {
                 method: 'POST',
@@ -700,33 +735,28 @@ HTML_TEMPLATE = '''
             }
         } catch (err) {
             console.error(err);
-            galleryDiv.innerHTML = '<div class="no-results">❌ Network error. Try again.</div>';
+            galleryDiv.innerHTML = '<div class="no-results">❌ Network error. Please try again.</div>';
         } finally {
             loadingDiv.style.display = 'none';
             generateBtn.disabled = false;
         }
     });
 
-    // No-background toggle
     const removeBgBtn = document.getElementById('remove-bg-btn');
+    let bgToggleState = false;
     removeBgBtn.addEventListener('click', () => {
         if (currentNoBg && currentNoBg.length) {
-            renderImages(currentNoBg, true);
-            removeBgBtn.textContent = "🖼 Show original";
-            const original = currentImages;
-            const toggleHandler = () => {
-                if (removeBgBtn.textContent.includes("Show original")) {
-                    renderImages(original, false);
-                    removeBgBtn.textContent = "🎭 Without Background";
-                } else {
-                    renderImages(currentNoBg, true);
-                    removeBgBtn.textContent = "🖼 Show original";
-                }
-            };
-            removeBgBtn.removeEventListener('click', toggleHandler);
-            removeBgBtn.addEventListener('click', toggleHandler);
+            if (!bgToggleState) {
+                renderImages(currentNoBg, true);
+                removeBgBtn.textContent = "🖼 Show original";
+                bgToggleState = true;
+            } else {
+                renderImages(currentImages, false);
+                removeBgBtn.textContent = "🎭 Remove background";
+                bgToggleState = false;
+            }
         } else {
-            alert("No background-removed version available.");
+            alert("No background-removed version available for these images.");
         }
     });
 </script>
@@ -751,6 +781,26 @@ def generate():
         return jsonify({'success': True, 'images': images, 'no_bg': no_bg})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+# NEW: Download proxy endpoint
+@app.route('/download')
+def download_image():
+    url = request.args.get('url')
+    if not url:
+        return jsonify({'error': 'No URL provided'}), 400
+    try:
+        # Fetch the image from the external URL
+        resp = requests.get(url, stream=True, verify=False, timeout=30)
+        # Return as attachment
+        return Response(
+            resp.iter_content(chunk_size=8192),
+            headers={
+                'Content-Disposition': 'attachment; filename="juhi_ai_image.jpg"',
+                'Content-Type': resp.headers.get('Content-Type', 'image/jpeg')
+            }
+        )
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
