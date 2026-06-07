@@ -6,12 +6,13 @@ import base64
 import requests
 import urllib3
 from flask import Flask, request, jsonify, render_template_string, Response
+from io import BytesIO
 
 urllib3.disable_warnings()
 
 app = Flask(__name__)
 
-# ---------- Helper functions (unchanged) ----------
+# ---------- Helper functions for image generation (unchanged) ----------
 def _h(s):
     return hashlib.sha256(s.encode()).hexdigest()[:16]
 
@@ -143,7 +144,7 @@ def _gen(prompt, style_id, aspect):
                 no_bg.append(decoded[start:end])
     return images, no_bg
 
-# ---------- Flask Web UI with Premium Look ----------
+# ---------- Flask Web UI with Premium Look + Image to Text ----------
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="en">
@@ -326,7 +327,7 @@ HTML_TEMPLATE = '''
             background: rgba(139,92,246,0.3);
             border-style: solid;
         }
-        .generate-btn {
+        .generate-btn, .img2txt-btn {
             background: linear-gradient(90deg, var(--primary), var(--secondary));
             border: none;
             font-weight: 700;
@@ -338,8 +339,13 @@ HTML_TEMPLATE = '''
             transition: 0.2s;
             box-shadow: 0 8px 20px rgba(59,130,246,0.3);
             color: white;
+            margin-bottom: 1rem;
         }
-        .generate-btn:hover {
+        .img2txt-btn {
+            background: linear-gradient(90deg, #ec4899, #8b5cf6);
+            margin-bottom: 0;
+        }
+        .generate-btn:hover, .img2txt-btn:hover {
             transform: translateY(-2px);
             filter: brightness(1.05);
             box-shadow: 0 12px 25px rgba(139,92,246,0.4);
@@ -443,6 +449,7 @@ HTML_TEMPLATE = '''
             font-size: 0.7rem;
             opacity: 0.5;
         }
+        /* Modal for image to text */
         .modal {
             display: none;
             position: fixed;
@@ -495,26 +502,39 @@ HTML_TEMPLATE = '''
         .close-modal:hover {
             color: white;
         }
-        .modal-options {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.8rem;
-        }
-        .modal-option {
-            background: rgba(30,32,48,0.7);
-            border: 1px solid rgba(255,255,255,0.1);
-            padding: 0.7rem 1.2rem;
-            border-radius: 2rem;
+        .file-upload-area {
+            border: 2px dashed var(--primary);
+            border-radius: 1.5rem;
+            padding: 2rem;
+            text-align: center;
             cursor: pointer;
-            transition: all 0.15s;
-            font-size: 0.9rem;
-            font-weight: 500;
+            margin-bottom: 1rem;
+            transition: 0.2s;
         }
-        .modal-option:hover {
+        .file-upload-area:hover {
+            background: rgba(139,92,246,0.1);
+        }
+        .prompt-result {
+            background: rgba(0,0,0,0.5);
+            border-radius: 1.2rem;
+            padding: 1rem;
+            margin-top: 1rem;
+            position: relative;
+            font-size: 0.9rem;
+            word-break: break-word;
+        }
+        .copy-icon {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            cursor: pointer;
+            background: rgba(255,255,255,0.1);
+            border-radius: 50%;
+            padding: 6px;
+            transition: 0.2s;
+        }
+        .copy-icon:hover {
             background: var(--primary);
-            transform: translateY(-2px);
-            box-shadow: 0 5px 12px rgba(139,92,246,0.4);
-            border-color: transparent;
         }
         ::-webkit-scrollbar {
             width: 6px;
@@ -563,6 +583,7 @@ HTML_TEMPLATE = '''
                 <textarea id="prompt" placeholder="Describe your vision... e.g., a cosmic dragon floating through a nebula, cyberpunk, ethereal lighting"></textarea>
             </div>
             <button class="generate-btn" id="generate-btn"><i class="fas fa-sparkles"></i> Generate Images</button>
+            <button class="img2txt-btn" id="img2txt-btn"><i class="fas fa-image"></i> Image to Text</button>
             <div class="loading" id="loading">
                 <div class="spinner"></div>
                 <div style="font-size: 0.85rem;">Crafting your artwork...</div>
@@ -581,30 +602,28 @@ HTML_TEMPLATE = '''
     <footer>JUHI AI — advanced generative engine • style transfer & ultra HD</footer>
 </div>
 
-<div id="style-modal" class="modal">
+<!-- Modal for Image to Text -->
+<div id="img2txt-modal" class="modal">
     <div class="modal-content">
         <div class="modal-header">
-            <span><i class="fas fa-palette"></i> Choose Style</span>
-            <span class="close-modal" data-modal="style-modal">&times;</span>
+            <span><i class="fas fa-image"></i> Image to Prompt</span>
+            <span class="close-modal" data-modal="img2txt-modal">&times;</span>
         </div>
-        <div class="modal-options" id="style-modal-options">
-            {% for val, name in styles %}
-            <div class="modal-option" data-style="{{ val }}" data-name="{{ name }}">{{ name }}</div>
-            {% endfor %}
+        <div class="file-upload-area" id="file-upload-area">
+            <i class="fas fa-cloud-upload-alt fa-2x" style="margin-bottom: 10px; color: var(--primary);"></i>
+            <p>Click or tap to select an image</p>
+            <input type="file" id="image-file" accept="image/jpeg,image/png,image/jpg" style="display: none;">
         </div>
-    </div>
-</div>
-
-<div id="aspect-modal" class="modal">
-    <div class="modal-content">
-        <div class="modal-header">
-            <span><i class="fas fa-expand-alt"></i> Choose Aspect Ratio</span>
-            <span class="close-modal" data-modal="aspect-modal">&times;</span>
+        <div id="img2txt-loading" style="display: none; text-align: center; margin: 1rem 0;">
+            <div class="spinner"></div>
+            <div>Analyzing image...</div>
         </div>
-        <div class="modal-options" id="aspect-modal-options">
-            {% for val, name in aspects %}
-            <div class="modal-option" data-aspect="{{ val }}" data-name="{{ name }}">{{ name }} ({{ val }})</div>
-            {% endfor %}
+        <div id="img2txt-result" style="display: none;">
+            <div class="prompt-result">
+                <div class="copy-icon" id="copy-prompt-btn"><i class="fas fa-copy"></i></div>
+                <strong>AI Generated Prompt:</strong>
+                <p id="generated-prompt" style="margin-top: 10px;"></p>
+            </div>
         </div>
     </div>
 </div>
@@ -621,38 +640,87 @@ HTML_TEMPLATE = '''
     const chooseAspectBtn = document.getElementById('choose-aspect-btn');
     const styleModal = document.getElementById('style-modal');
     const aspectModal = document.getElementById('aspect-modal');
+    const img2txtModal = document.getElementById('img2txt-modal');
+    const img2txtBtn = document.getElementById('img2txt-btn');
     const closeModals = document.querySelectorAll('.close-modal');
 
-    chooseStyleBtn.onclick = () => styleModal.style.display = 'flex';
-    chooseAspectBtn.onclick = () => aspectModal.style.display = 'flex';
-    closeModals.forEach(btn => {
+    // Style and Aspect modals (same as before) – we'll recreate them quickly
+    // Create style modal manually
+    const styleModalDiv = document.createElement('div');
+    styleModalDiv.id = 'style-modal';
+    styleModalDiv.className = 'modal';
+    styleModalDiv.innerHTML = `
+        <div class="modal-content">
+            <div class="modal-header">
+                <span><i class="fas fa-palette"></i> Choose Style</span>
+                <span class="close-modal" data-modal="style-modal">&times;</span>
+            </div>
+            <div class="modal-options" id="style-modal-options">
+                {% for val, name in styles %}
+                <div class="modal-option" data-style="{{ val }}" data-name="{{ name }}">{{ name }}</div>
+                {% endfor %}
+            </div>
+        </div>
+    `;
+    document.body.appendChild(styleModalDiv);
+
+    const aspectModalDiv = document.createElement('div');
+    aspectModalDiv.id = 'aspect-modal';
+    aspectModalDiv.className = 'modal';
+    aspectModalDiv.innerHTML = `
+        <div class="modal-content">
+            <div class="modal-header">
+                <span><i class="fas fa-expand-alt"></i> Choose Aspect Ratio</span>
+                <span class="close-modal" data-modal="aspect-modal">&times;</span>
+            </div>
+            <div class="modal-options" id="aspect-modal-options">
+                {% for val, name in aspects %}
+                <div class="modal-option" data-aspect="{{ val }}" data-name="{{ name }}">{{ name }} ({{ val }})</div>
+                {% endfor %}
+            </div>
+        </div>
+    `;
+    document.body.appendChild(aspectModalDiv);
+
+    // Re-fetch close buttons after adding modals
+    const allCloseModals = document.querySelectorAll('.close-modal');
+    allCloseModals.forEach(btn => {
         btn.onclick = () => {
             const modalId = btn.getAttribute('data-modal');
             document.getElementById(modalId).style.display = 'none';
         };
     });
+
     window.onclick = (e) => {
-        if (e.target === styleModal) styleModal.style.display = 'none';
-        if (e.target === aspectModal) aspectModal.style.display = 'none';
+        if (e.target === document.getElementById('style-modal')) document.getElementById('style-modal').style.display = 'none';
+        if (e.target === document.getElementById('aspect-modal')) document.getElementById('aspect-modal').style.display = 'none';
+        if (e.target === img2txtModal) img2txtModal.style.display = 'none';
     };
 
+    chooseStyleBtn.onclick = () => document.getElementById('style-modal').style.display = 'flex';
+    chooseAspectBtn.onclick = () => document.getElementById('aspect-modal').style.display = 'flex';
+    img2txtBtn.onclick = () => img2txtModal.style.display = 'flex';
+
+    // Style selection
     document.querySelectorAll('#style-modal-options .modal-option').forEach(opt => {
         opt.addEventListener('click', () => {
             selectedStyle = opt.dataset.style;
             selectedStyleName = opt.dataset.name;
             styleDisplay.innerText = `🎨 Selected style: ${selectedStyleName}`;
-            styleModal.style.display = 'none';
+            document.getElementById('style-modal').style.display = 'none';
         });
     });
+    // Aspect selection
     document.querySelectorAll('#aspect-modal-options .modal-option').forEach(opt => {
         opt.addEventListener('click', () => {
             selectedAspect = opt.dataset.aspect;
             selectedAspectName = opt.dataset.name;
             aspectDisplay.innerText = `📐 Selected aspect: ${selectedAspectName} (${selectedAspect})`;
-            aspectModal.style.display = 'none';
+            document.getElementById('aspect-modal').style.display = 'none';
         });
     });
 
+    // Random prompts for generation
     const randomPrompts = [
         "ethereal forest spirit with glowing antlers", "cyberpunk samurai under neon rain", "golden hour over ancient ruins",
         "steampunk airship floating above clouds", "magical girl surrounded by cosmic butterflies", "dragon perched on futuristic Tokyo tower",
@@ -664,13 +732,12 @@ HTML_TEMPLATE = '''
         document.getElementById('prompt').value = r;
     });
 
+    // Image generation logic (same as before)
     let currentImages = [];
     let currentNoBg = [];
 
-    // FIXED: download uses backend proxy
     function downloadImage(url, filename = 'juhi_ai_image.jpg') {
-        const proxyUrl = `/download?url=${encodeURIComponent(url)}`;
-        window.location.href = proxyUrl;
+        window.location.href = `/download?url=${encodeURIComponent(url)}`;
     }
 
     function renderImages(urls, isNoBgMode = false) {
@@ -759,6 +826,49 @@ HTML_TEMPLATE = '''
             alert("No background-removed version available for these images.");
         }
     });
+
+    // Image to Text logic
+    const fileUploadArea = document.getElementById('file-upload-area');
+    const fileInput = document.getElementById('image-file');
+    const img2txtLoading = document.getElementById('img2txt-loading');
+    const img2txtResult = document.getElementById('img2txt-result');
+    const generatedPrompt = document.getElementById('generated-prompt');
+    const copyPromptBtn = document.getElementById('copy-prompt-btn');
+
+    fileUploadArea.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const formData = new FormData();
+        formData.append('image', file);
+        img2txtLoading.style.display = 'block';
+        img2txtResult.style.display = 'none';
+        try {
+            const response = await fetch('/img2txt', {
+                method: 'POST',
+                body: formData
+            });
+            const data = await response.json();
+            if (data.success && data.prompt) {
+                generatedPrompt.innerText = data.prompt;
+                img2txtResult.style.display = 'block';
+            } else {
+                alert('Failed to analyze image: ' + (data.error || 'unknown'));
+            }
+        } catch (err) {
+            alert('Error: ' + err.message);
+        } finally {
+            img2txtLoading.style.display = 'none';
+            fileInput.value = '';
+        }
+    });
+
+    copyPromptBtn.addEventListener('click', () => {
+        const text = generatedPrompt.innerText;
+        navigator.clipboard.writeText(text).then(() => {
+            alert('Prompt copied to clipboard!');
+        }).catch(() => alert('Failed to copy'));
+    });
 </script>
 </body>
 </html>
@@ -782,16 +892,13 @@ def generate():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
-# NEW: Download proxy endpoint
 @app.route('/download')
 def download_image():
     url = request.args.get('url')
     if not url:
         return jsonify({'error': 'No URL provided'}), 400
     try:
-        # Fetch the image from the external URL
         resp = requests.get(url, stream=True, verify=False, timeout=30)
-        # Return as attachment
         return Response(
             resp.iter_content(chunk_size=8192),
             headers={
@@ -801,6 +908,35 @@ def download_image():
         )
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+# Image to Text endpoint
+@app.route('/img2txt', methods=['POST'])
+def img2txt():
+    if 'image' not in request.files:
+        return jsonify({'success': False, 'error': 'No image file provided'}), 400
+    file = request.files['image']
+    if file.filename == '':
+        return jsonify({'success': False, 'error': 'Empty filename'}), 400
+    try:
+        img_data = file.read()
+        files = {
+            'image': ('image.jpg', BytesIO(img_data))
+        }
+        data = {
+            'tool_name': 'IMAGE TO PROMPT',
+            'tool_description': 'Get Image to Prompt by AI.'
+        }
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        r = requests.post('https://api.deepai.org/analyze-image-for-ads', files=files, data=data, headers=headers, timeout=60)
+        if r.status_code != 200:
+            return jsonify({'success': False, 'error': r.text}), 500
+        result = r.json()
+        prompt = None
+        if result.get('descriptions'):
+            prompt = result['descriptions'][0]
+        return jsonify({'success': True, 'prompt': prompt})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
